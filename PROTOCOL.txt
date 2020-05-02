@@ -1,0 +1,102 @@
+Protocol
+--------
+The application uses a custom protocol on top of UDP for reliable transport of
+the audio chunks. Many of the concepts in the protocol are derived from the
+Transmission Control Protocol (TCP; see https://tools.ietf.org/html/rfc793).
+
+Each packet in this protocol consists of a header and (optionally) a sequence of
+bytes. The header format is shown below:
+
+    0                   1                   2                   3
+    0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                        Sequence Number                        |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                    Acknowledgment Number                      |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |                     |E|A|R|S|F|                               |
+   |    Reserved         |R|C|S|Y|I|            Window             |
+   |                     |R|K|T|N|N|                               |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |            Length             |             data              |
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+   Sequence Number:  32 bits
+
+       The sequence number points to the current index in byte stream of the
+       sender (the accumulation of the bytes sent).
+
+   Acknowledgment Number:  32 bits
+
+       If the ACK flag bit is set the acknowledgement number represents the
+       next sequence number the sender of the packet is expecting to
+       receive.  Once a connection is established this is always sent.
+
+   Reserved: 11 bits
+
+       These bits are reserved for future use and must all be set to zero.
+
+   Control Bits:  5 bits (from left to right):
+
+       ERR:  Error indicator
+       ACK:  Acknowledgment field significant
+       RST:  Reset the connection
+       SYN:  Synchronize sequence numbers
+       FIN:  No more data from sender
+
+   Window:  16 bits
+
+       The number of bytes the sender is willing to accept from the receiver.
+
+   Length:  16 bits
+
+       The number of remaining bytes after the packet header.
+
+Similar to TCP, the protocol works with a three-way handshake. The client
+initially sends a packet with the SYN flag bit set, a single byte representing
+the preferred codec to use and the bytes representing the name of the audio
+file to stream.
+
+   struct sas_transport_packet_cfg {
+       uint8_t codec;
+   };
+
+On failure, the server will reset the connection by sending a packet with
+the RST flag bit set. Additionally, the ERR flag bit may be set, which indicates
+an additional payload containing the error code is included:
+
+   struct sas_transport_packet_err {
+       int32_t err;
+   };
+
+Errors that might occur during handshake include the file not being found, the
+file format not supported or an incorrect packet being received.
+
+On success, the server will respond with a packet with the SYN and ACK flag
+bits set. The payload will contain the following structure
+(representing audio stream information):
+
+   struct sas_transport_packet_cfg_ack {
+       int32_t sample_rate;
+       int8_t sample_size;
+       int8_t channels;
+       uint8_t codec;
+   };
+
+The client may, after receiving the SYN-ACK packet, respond with a packet with
+the ACK bit set and a window size specified. This window size will determine the
+amount of bytes the server will send and acts as back-pressure. If the client
+cannot process the bytes fast enough, it should minimize or close its receive
+window.
+
+During the established session, the server and client may send a packet with the
+RST flag bit set in order to reset the connection. This will immediately close
+the connection on the sender's side. The sender may additionally set the FIN
+flag bit to indicate it finished gracefully.
+
+Duplicate and out-of-order packets in this protocol can be detected by
+validating whether the sequence number in a received packet is equal to the
+current ACK value (The sequence number of the packet that was ACKed last plus
+its remaining length). If this is not the case, the packet is either duplicate
+or out-of-order. It is possible to implement buffering and re-ordering of
+packets in this protocol. However, this is not implemented at the moment.
